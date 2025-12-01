@@ -1,0 +1,6 @@
+gdstk
+streamlit
+opencv-python-headless
+numpy
+pillow
+numba

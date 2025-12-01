@@ -1,0 +1,11 @@
+name: halftonegds
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.9
+  - gdstk
+  - streamlit
+  - opencv
+  - numpy
+  - pillow
+  - numba
