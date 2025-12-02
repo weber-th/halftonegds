@@ -437,21 +437,49 @@ if uploaded_file is not None:
             polygons = trace_image(processed_image, threshold=trace_threshold, epsilon_factor=epsilon_factor)
             st.session_state['polygons'] = polygons
 
+        # Apply vector operations
+        processed_polygons = st.session_state['polygons']
+        if processed_polygons:
+            max_area_val = None if max_area == 0 else max_area
+            processed_polygons = filter_polygons_by_area(
+                processed_polygons, min_area=min_area, max_area=max_area_val
+            )
+
+            if enable_union and processed_polygons:
+                processed_polygons = boolean_operation(processed_polygons, "union")
+
+            if offset_val != 0 and processed_polygons:
+                offset_px = offset_val / pixel_size
+                processed_polygons = offset_polygons(processed_polygons, offset_px)
+
+            if enable_invert:
+                wafer_diameter_um = wafer_size_inch * 25400
+                target_dim = int(wafer_diameter_um / pixel_size)
+                wafer_poly = np.array(
+                    [[0, 0], [target_dim, 0], [target_dim, target_dim], [0, target_dim]],
+                    dtype=float,
+                )
+                processed_polygons = boolean_operation(
+                    [wafer_poly], "difference", operand_polygons=processed_polygons
+                )
+
+        st.session_state['polygons'] = processed_polygons
+
         with col2:
             st.subheader("Vector Preview")
             if st.session_state['polygons']:
                 st.info(f"Found {len(st.session_state['polygons'])} polygons.")
-                
+
                 # Draw polygons on a blank canvas for preview
                 wafer_diameter_um = wafer_size_inch * 25400
                 target_dim = int(wafer_diameter_um / pixel_size)
                 vector_preview = np.zeros((target_dim, target_dim, 3), dtype=np.uint8)
-                
+
                 # Draw polygons (Green)
                 # Polygons are in pixel coordinates
                 polys_int = [p.astype(np.int32) for p in st.session_state['polygons']]
                 cv2.polylines(vector_preview, polys_int, True, (0, 255, 0), 1)
-                
+
                 st.image(vector_preview, caption="Vector Preview", clamp=True)
             else:
                 st.warning("No polygons found.")
@@ -459,45 +487,45 @@ if uploaded_file is not None:
         st.markdown("---")
         
         if st.button("Generate GDS (Vector)"):
-             if not st.session_state['polygons']:
-                 st.error("No polygons to write!")
-             else:
+            if not st.session_state['polygons']:
+                st.error("No polygons to write!")
+            else:
                 with st.spinner("Generating GDS file..."):
                     try:
                         logger.info("Starting GDS generation (Vector)...")
                         with tempfile.NamedTemporaryFile(delete=False, suffix=".gds") as tmp_file:
                             tmp_filename = tmp_file.name
-                        
+
                         # Initialize writer just to use the generate_from_polygons method
                         # Image is not needed for vector mode, pass dummy
-                        dummy_img = np.zeros((10,10))
+                        dummy_img = np.zeros((10, 10))
                         writer = GDSWriter(
-                            dummy_img, 
-                            pixel_size, 
+                            dummy_img,
+                            pixel_size,
                             wafer_size_inch,
                             pattern_layer=pattern_layer,
                             outline_layer=outline_layer
                         )
-                        
+
                         lib = writer.generate_from_polygons(st.session_state['polygons'])
                         lib.write_gds(tmp_filename)
-                        
+
                         logger.info(f"GDS saved to {tmp_filename}")
-                        
+
                         with open(tmp_filename, "rb") as f:
                             gds_data = f.read()
-                        
+
                         st.success(f"GDS generated successfully! ({len(gds_data)/1024:.1f} KB)")
-                        
+
                         st.download_button(
                             label="Download GDS",
                             data=gds_data,
                             file_name="vector_output.gds",
                             mime="application/octet-stream"
                         )
-                        
+
                         os.unlink(tmp_filename)
-                        
+
                     except Exception as e:
                         logger.error(f"Error generating GDS: {e}")
                         st.error(f"Error generating GDS: {e}")
