@@ -39,6 +39,14 @@ wafer_size_inch = st.sidebar.selectbox(
     format_func=lambda x: f"{x} inch"
 )
 
+background_color = st.sidebar.slider(
+    "Preview Background (grayscale)",
+    min_value=0,
+    max_value=255,
+    value=255,
+    help="Set the preview background color. Use a bright value (e.g. 255) for typical reflective wafers."
+)
+
 pixel_size = st.sidebar.number_input(
     "Pixel Size (µm)", 
     min_value=0.1, 
@@ -139,7 +147,7 @@ def apply_gamma(image, gamma=1.0):
     table = np.array([((i / 255.0) ** invGamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
     return cv2.LUT(image, table)
 
-def process_image(image, wafer_size_inch, pixel_size, scale, rotation, offset_x_mm, offset_y_mm, edge_exclusion_mm, flat_orientation):
+def process_image(image, wafer_size_inch, pixel_size, scale, rotation, offset_x_mm, offset_y_mm, edge_exclusion_mm, flat_orientation, background_color):
     logger.info("Processing image transformation...")
     # Wafer dimensions in microns
     wafer_diameter_um = wafer_size_inch * 25400
@@ -147,8 +155,8 @@ def process_image(image, wafer_size_inch, pixel_size, scale, rotation, offset_x_
     # Target resolution (pixels)
     target_dim = int(wafer_diameter_um / pixel_size)
     
-    # Create canvas (black background)
-    canvas = np.zeros((target_dim, target_dim), dtype=np.uint8)
+    # Create canvas with configurable background
+    canvas = np.full((target_dim, target_dim), background_color, dtype=np.uint8)
     
     # Image transformation
     h, w = image.shape
@@ -301,8 +309,8 @@ if uploaded_file is not None:
 
             # Process Image (Scale, Rotate, Place on Wafer Canvas, Masking)
             processed_image = process_image(
-                original_image, wafer_size_inch, pixel_size, scale, rotation, 
-                offset_x, offset_y, edge_exclusion, flat_orientation
+                original_image, wafer_size_inch, pixel_size, scale, rotation,
+                offset_x, offset_y, edge_exclusion, flat_orientation, background_color
             )
 
             col1, col2 = st.columns(2)
@@ -322,13 +330,20 @@ if uploaded_file is not None:
                     with st.spinner("Halftoning..."):
                         logger.info(f"Starting halftoning with algorithm: {algorithm}")
                         halftoner = Halftoner(processed_image)
-                        binary_image = halftoner.run(algorithm=algorithm)
+                        halftone_output = halftoner.run(algorithm=algorithm)
+
+                        # Dark features should correspond to written areas on a bright wafer,
+                        # so invert the halftone result to make dark pixels the written pixels.
+                        binary_image = 1 - halftone_output
                         st.session_state['binary_image'] = binary_image
                         logger.info("Halftoning complete.")
-                
+
                 # Display cached result if available
                 if st.session_state['binary_image'] is not None:
-                    st.image(st.session_state['binary_image'] * 255, caption=f"Result ({algorithm})", clamp=True)
+                    display_image = np.full(st.session_state['binary_image'].shape, background_color, dtype=np.uint8)
+                    display_image[st.session_state['binary_image'] == 1] = 0
+
+                    st.image(display_image, caption=f"Result ({algorithm})", clamp=True)
                     
                     # --- Analysis ---
                     st.markdown("### Analysis")
@@ -342,8 +357,8 @@ if uploaded_file is not None:
                     # Litho Simulation
                     if st.checkbox("Show Lithography Simulation"):
                         st.caption("Simulated resist development (Gaussian Blur)")
-                        # Blur to simulate light diffraction/resist diffusion
-                        simulated = cv2.GaussianBlur(st.session_state['binary_image'] * 255, (0, 0), sigmaX=1.0)
+                        # Blur to simulate light diffraction/resist diffusion on dark features
+                        simulated = cv2.GaussianBlur(display_image, (0, 0), sigmaX=1.0)
                         st.image(simulated, caption="Litho Simulation", clamp=True)
                     
                 else:
@@ -423,8 +438,8 @@ if uploaded_file is not None:
             # This handles scaling, rotation, offset, exclusion, etc.
             
             processed_image = process_image(
-                original_image, wafer_size_inch, pixel_size, scale, rotation, 
-                offset_x, offset_y, edge_exclusion, flat_orientation
+                original_image, wafer_size_inch, pixel_size, scale, rotation,
+                offset_x, offset_y, edge_exclusion, flat_orientation, background_color
             )
             
             with col1:
@@ -445,7 +460,7 @@ if uploaded_file is not None:
                 # Draw polygons on a blank canvas for preview
                 wafer_diameter_um = wafer_size_inch * 25400
                 target_dim = int(wafer_diameter_um / pixel_size)
-                vector_preview = np.zeros((target_dim, target_dim, 3), dtype=np.uint8)
+                vector_preview = np.full((target_dim, target_dim, 3), background_color, dtype=np.uint8)
                 
                 # Draw polygons (Green)
                 # Polygons are in pixel coordinates
