@@ -7,6 +7,8 @@ import tempfile
 import logging
 from src.halftoning import Halftoner
 from src.gds_writer import GDSWriter
+from src.vector_processing import parse_svg, trace_image, filter_polygons_by_area, boolean_operation, offset_polygons
+import gdstk
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -19,11 +21,14 @@ st.set_page_config(page_title="Halftone GDS Generator", layout="wide")
 
 st.title("Halftone GDS Generator")
 st.markdown("""
-Upload an image to convert it into a halftone pattern and export it as a GDSII file.
+Convert images or vector files into GDSII patterns.
 """)
 
 # Sidebar settings
 st.sidebar.header("Settings")
+
+# --- Mode Selection ---
+mode = st.sidebar.radio("Mode", ["Halftone", "Vector/Trace"])
 
 # --- Wafer Settings ---
 st.sidebar.subheader("Wafer Settings")
@@ -39,7 +44,7 @@ pixel_size = st.sidebar.number_input(
     min_value=0.1, 
     value=10.0, 
     step=0.1,
-    help="Size of each pixel in the GDS file."
+    help="Size of each pixel in the GDS file (or scaling factor for vectors)."
 )
 
 dpi = 25400 / pixel_size
@@ -66,42 +71,66 @@ rotation = st.sidebar.slider("Rotation (degrees)", -180.0, 180.0, 0.0, 0.1)
 offset_x = st.sidebar.number_input("Offset X (mm)", value=0.0, step=0.1)
 offset_y = st.sidebar.number_input("Offset Y (mm)", value=0.0, step=0.1)
 
-# --- Image Processing ---
-st.sidebar.subheader("Image Processing")
-gamma = st.sidebar.slider(
-    "Gamma Correction",
-    min_value=0.1,
-    max_value=3.0,
-    value=1.0,
-    step=0.1,
-    help="Adjust image contrast. < 1.0 makes darks brighter, > 1.0 makes darks darker."
-)
+# --- Mode Specific Settings ---
+if mode == "Halftone":
+    # --- Image Processing ---
+    st.sidebar.subheader("Image Processing")
+    gamma = st.sidebar.slider(
+        "Gamma Correction",
+        min_value=0.1,
+        max_value=3.0,
+        value=1.0,
+        step=0.1,
+        help="Adjust image contrast. < 1.0 makes darks brighter, > 1.0 makes darks darker."
+    )
 
-invert = st.sidebar.checkbox("Invert Image", value=False)
+    invert = st.sidebar.checkbox("Invert Image", value=False)
 
-# --- Halftoning Settings ---
-st.sidebar.subheader("Halftoning")
-algorithm = st.sidebar.selectbox(
-    "Algorithm",
-    ["floyd-steinberg", "atkinson", "jarvis-judice-ninke", "stucki", "burkes", "sierra-lite", "bayer"],
-    index=0
-)
+    # --- Halftoning Settings ---
+    st.sidebar.subheader("Halftoning")
+    algorithm = st.sidebar.selectbox(
+        "Algorithm",
+        ["floyd-steinberg", "atkinson", "jarvis-judice-ninke", "stucki", "burkes", "sierra-lite", "bayer"],
+        index=0
+    )
+    
+    # --- GDS Settings ---
+    st.sidebar.subheader("GDS Settings")
+    gds_shape = st.sidebar.selectbox(
+        "Pixel Shape",
+        options=["rectangle", "circle"],
+        index=0,
+        help="Shape of the individual pixels in the GDS file."
+    )
 
-# --- GDS Settings ---
-st.sidebar.subheader("GDS Settings")
-gds_shape = st.sidebar.selectbox(
-    "Pixel Shape",
-    options=["rectangle", "circle"],
-    index=0,
-    help="Shape of the individual pixels in the GDS file."
-)
+elif mode == "Vector/Trace":
+    st.sidebar.subheader("Vector/Trace Settings")
+    
+    # Trace Settings
+    trace_threshold = st.sidebar.slider("Trace Threshold", 0, 255, 128, 1)
+    epsilon_factor = st.sidebar.slider("Smoothness (Epsilon)", 0.0001, 0.01, 0.001, 0.0001, format="%.4f")
+    fill_holes = st.sidebar.checkbox("Fill Holes (Trace)", value=False, help="If checked, ignores internal holes during tracing.")
+
+    # Advanced Operations
+    with st.sidebar.expander("Advanced Operations"):
+        st.markdown("### Filtering")
+        min_area = st.sidebar.number_input("Min Area (px²)", value=0.0, step=10.0)
+        max_area = st.sidebar.number_input("Max Area (px²)", value=0.0, step=100.0, help="0 for no limit")
+        
+        st.markdown("### Boolean Ops")
+        enable_union = st.sidebar.checkbox("Merge All (Union)", value=False, help="Merge overlapping polygons.")
+        enable_invert = st.sidebar.checkbox("Invert (Negative)", value=False, help="Subtract patterns from the wafer.")
+        
+        st.markdown("### Offset")
+        offset_val = st.sidebar.number_input("Offset (µm)", value=0.0, step=0.1, help="Positive to grow, negative to shrink.")
+
 
 pattern_layer = st.sidebar.number_input("Pattern Layer", value=0, step=1)
 outline_layer = st.sidebar.number_input("Outline Layer", value=2, step=1)
 
 
 # File uploader
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png", "bmp"])
+uploaded_file = st.file_uploader("Choose a file...", type=["jpg", "jpeg", "png", "bmp", "svg"])
 
 def apply_gamma(image, gamma=1.0):
     if gamma == 1.0:
@@ -190,13 +219,6 @@ def process_image(image, wafer_size_inch, pixel_size, scale, rotation, offset_x_
         cv2.circle(mask, (cx, cy), valid_radius, 255, -1)
     
     # 2. Flat
-    # Standard flat length is roughly 30-50mm depending on wafer size, 
-    # but usually defined by a chord. 
-    # Let's approximate a standard flat cut.
-    # A simple way is to cut off a segment of the circle.
-    # Let's say the flat is at 95% of the radius (just a visual approx for now, or we could be precise).
-    # Standard primary flat is usually perpendicular to radius.
-    
     flat_cut_ratio = 0.95 # Cut off outer 5%
     cut_dist = int(radius_px * flat_cut_ratio)
     
@@ -228,8 +250,6 @@ def draw_wafer_outline(image_rgb, wafer_size_inch, pixel_size, flat_orientation)
     cut_dist = int(radius * flat_cut_ratio)
     
     # Calculate chord points
-    # x^2 + y^2 = r^2
-    # if y = cut_dist, x = sqrt(r^2 - cut_dist^2)
     chord_half_len = int(np.sqrt(radius**2 - cut_dist**2))
     
     pt1, pt2 = None, None
@@ -259,114 +279,228 @@ def draw_wafer_outline(image_rgb, wafer_size_inch, pixel_size, flat_orientation)
 # Initialize session state for cached result
 if 'binary_image' not in st.session_state:
     st.session_state['binary_image'] = None
+if 'polygons' not in st.session_state:
+    st.session_state['polygons'] = None
 
 if uploaded_file is not None:
-    # Read image
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    original_image = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
+    file_ext = uploaded_file.name.split('.')[-1].lower()
     
-    # Apply Gamma Correction
-    original_image = apply_gamma(original_image, gamma)
-    
-    if invert:
-        original_image = 255 - original_image
-
-    # Process Image (Scale, Rotate, Place on Wafer Canvas, Masking)
-    processed_image = process_image(
-        original_image, wafer_size_inch, pixel_size, scale, rotation, 
-        offset_x, offset_y, edge_exclusion, flat_orientation
-    )
-
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Preview (Wafer)")
-        # Convert to RGB for visualization (to draw colored overlay)
-        preview_img = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
-        preview_img = draw_wafer_outline(preview_img, wafer_size_inch, pixel_size, flat_orientation)
-        st.image(preview_img, caption=f"Wafer: {wafer_size_inch}\"", clamp=True)
-
-    with col2:
-        st.subheader("Halftone Result")
-        
-        # Manual Trigger for Halftoning
-        if st.button("Run Halftoning"):
-            with st.spinner("Halftoning..."):
-                logger.info(f"Starting halftoning with algorithm: {algorithm}")
-                halftoner = Halftoner(processed_image)
-                binary_image = halftoner.run(algorithm=algorithm)
-                st.session_state['binary_image'] = binary_image
-                logger.info("Halftoning complete.")
-        
-        # Display cached result if available
-        if st.session_state['binary_image'] is not None:
-            st.image(st.session_state['binary_image'] * 255, caption=f"Result ({algorithm})", clamp=True)
-            
-            # --- Analysis ---
-            st.markdown("### Analysis")
-            
-            # Fill Factor
-            total_pixels = st.session_state['binary_image'].size
-            filled_pixels = np.count_nonzero(st.session_state['binary_image'])
-            fill_factor = (filled_pixels / total_pixels) * 100
-            st.metric("Fill Factor", f"{fill_factor:.2f}%")
-            
-            # Litho Simulation
-            if st.checkbox("Show Lithography Simulation"):
-                st.caption("Simulated resist development (Gaussian Blur)")
-                # Blur to simulate light diffraction/resist diffusion
-                # Sigma depends on resolution, just a visual guess here
-                simulated = cv2.GaussianBlur(st.session_state['binary_image'] * 255, (0, 0), sigmaX=1.0)
-                st.image(simulated, caption="Litho Simulation", clamp=True)
-            
+    if mode == "Halftone":
+        if file_ext == "svg":
+            st.error("SVG files are not supported in Halftone mode. Please switch to Vector/Trace mode.")
         else:
-            st.info("Click 'Run Halftoning' to generate the pattern.")
+            # Read image
+            file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+            original_image = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
+            
+            # Apply Gamma Correction
+            original_image = apply_gamma(original_image, gamma)
+            
+            if invert:
+                original_image = 255 - original_image
 
-    st.markdown("---")
-    
-    # GDS Generation
-    if st.button("Generate GDS"):
-        if st.session_state['binary_image'] is None:
-            st.error("Please run halftoning first!")
+            # Process Image (Scale, Rotate, Place on Wafer Canvas, Masking)
+            processed_image = process_image(
+                original_image, wafer_size_inch, pixel_size, scale, rotation, 
+                offset_x, offset_y, edge_exclusion, flat_orientation
+            )
+
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Preview (Wafer)")
+                # Convert to RGB for visualization (to draw colored overlay)
+                preview_img = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
+                preview_img = draw_wafer_outline(preview_img, wafer_size_inch, pixel_size, flat_orientation)
+                st.image(preview_img, caption=f"Wafer: {wafer_size_inch}\"", clamp=True)
+
+            with col2:
+                st.subheader("Halftone Result")
+                
+                # Manual Trigger for Halftoning
+                if st.button("Run Halftoning"):
+                    with st.spinner("Halftoning..."):
+                        logger.info(f"Starting halftoning with algorithm: {algorithm}")
+                        halftoner = Halftoner(processed_image)
+                        binary_image = halftoner.run(algorithm=algorithm)
+                        st.session_state['binary_image'] = binary_image
+                        logger.info("Halftoning complete.")
+                
+                # Display cached result if available
+                if st.session_state['binary_image'] is not None:
+                    st.image(st.session_state['binary_image'] * 255, caption=f"Result ({algorithm})", clamp=True)
+                    
+                    # --- Analysis ---
+                    st.markdown("### Analysis")
+                    
+                    # Fill Factor
+                    total_pixels = st.session_state['binary_image'].size
+                    filled_pixels = np.count_nonzero(st.session_state['binary_image'])
+                    fill_factor = (filled_pixels / total_pixels) * 100
+                    st.metric("Fill Factor", f"{fill_factor:.2f}%")
+                    
+                    # Litho Simulation
+                    if st.checkbox("Show Lithography Simulation"):
+                        st.caption("Simulated resist development (Gaussian Blur)")
+                        # Blur to simulate light diffraction/resist diffusion
+                        simulated = cv2.GaussianBlur(st.session_state['binary_image'] * 255, (0, 0), sigmaX=1.0)
+                        st.image(simulated, caption="Litho Simulation", clamp=True)
+                    
+                else:
+                    st.info("Click 'Run Halftoning' to generate the pattern.")
+
+            st.markdown("---")
+            
+            # GDS Generation
+            if st.button("Generate GDS"):
+                if st.session_state['binary_image'] is None:
+                    st.error("Please run halftoning first!")
+                else:
+                    with st.spinner("Generating GDS file..."):
+                        try:
+                            logger.info("Starting GDS generation...")
+                            # Create a temporary file for the GDS
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".gds") as tmp_file:
+                                tmp_filename = tmp_file.name
+                            
+                            writer = GDSWriter(
+                                st.session_state['binary_image'], 
+                                pixel_size, 
+                                wafer_size_inch,
+                                shape=gds_shape,
+                                pattern_layer=pattern_layer,
+                                outline_layer=outline_layer
+                            )
+                            writer.save(tmp_filename)
+                            logger.info(f"GDS saved to {tmp_filename}")
+                            
+                            # Read the file back to allow download
+                            with open(tmp_filename, "rb") as f:
+                                gds_data = f.read()
+                            
+                            st.success(f"GDS generated successfully! ({len(gds_data)/1024:.1f} KB)")
+                            
+                            st.download_button(
+                                label="Download GDS",
+                                data=gds_data,
+                                file_name="halftone_output.gds",
+                                mime="application/octet-stream"
+                            )
+                            
+                            # Cleanup
+                            os.unlink(tmp_filename)
+                            logger.info("Temporary file cleaned up.")
+                            
+                        except Exception as e:
+                            logger.error(f"Error generating GDS: {e}")
+                            st.error(f"Error generating GDS: {e}")
+
+    elif mode == "Vector/Trace":
+        col1, col2 = st.columns(2)
+        
+        polygons = []
+        
+        if file_ext == "svg":
+            # SVG Processing
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".svg") as tmp_svg:
+                tmp_svg.write(uploaded_file.read())
+                tmp_svg_path = tmp_svg.name
+            
+            try:
+                polygons = parse_svg(tmp_svg_path, scale=scale) # Apply scale from sidebar
+                st.session_state['polygons'] = polygons
+            finally:
+                os.unlink(tmp_svg_path)
+                
         else:
-            with st.spinner("Generating GDS file..."):
-                try:
-                    logger.info("Starting GDS generation...")
-                    # Create a temporary file for the GDS
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".gds") as tmp_file:
-                        tmp_filename = tmp_file.name
-                    
-                    writer = GDSWriter(
-                        st.session_state['binary_image'], 
-                        pixel_size, 
-                        wafer_size_inch,
-                        shape=gds_shape,
-                        pattern_layer=pattern_layer,
-                        outline_layer=outline_layer
-                    )
-                    writer.save(tmp_filename)
-                    logger.info(f"GDS saved to {tmp_filename}")
-                    
-                    # Read the file back to allow download
-                    with open(tmp_filename, "rb") as f:
-                        gds_data = f.read()
-                    
-                    st.success(f"GDS generated successfully! ({len(gds_data)/1024:.1f} KB)")
-                    
-                    st.download_button(
-                        label="Download GDS",
-                        data=gds_data,
-                        file_name="halftone_output.gds",
-                        mime="application/octet-stream"
-                    )
-                    
-                    # Cleanup
-                    os.unlink(tmp_filename)
-                    logger.info("Temporary file cleaned up.")
-                    
-                except Exception as e:
-                    logger.error(f"Error generating GDS: {e}")
-                    st.error(f"Error generating GDS: {e}")
+            # Image Tracing
+            file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+            original_image = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
+            
+            # Apply transforms (Rotate/Scale/Offset) BEFORE tracing?
+            # Or trace then transform?
+            # Let's use the existing process_image to put it on the wafer canvas first
+            # This handles scaling, rotation, offset, exclusion, etc.
+            
+            processed_image = process_image(
+                original_image, wafer_size_inch, pixel_size, scale, rotation, 
+                offset_x, offset_y, edge_exclusion, flat_orientation
+            )
+            
+            with col1:
+                st.subheader("Preview (Wafer)")
+                preview_img = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
+                preview_img = draw_wafer_outline(preview_img, wafer_size_inch, pixel_size, flat_orientation)
+                st.image(preview_img, caption="Processed Image", clamp=True)
+            
+            # Trace
+            polygons = trace_image(processed_image, threshold=trace_threshold, epsilon_factor=epsilon_factor)
+            st.session_state['polygons'] = polygons
+
+        with col2:
+            st.subheader("Vector Preview")
+            if st.session_state['polygons']:
+                st.info(f"Found {len(st.session_state['polygons'])} polygons.")
+                
+                # Draw polygons on a blank canvas for preview
+                wafer_diameter_um = wafer_size_inch * 25400
+                target_dim = int(wafer_diameter_um / pixel_size)
+                vector_preview = np.zeros((target_dim, target_dim, 3), dtype=np.uint8)
+                
+                # Draw polygons (Green)
+                # Polygons are in pixel coordinates
+                polys_int = [p.astype(np.int32) for p in st.session_state['polygons']]
+                cv2.polylines(vector_preview, polys_int, True, (0, 255, 0), 1)
+                
+                st.image(vector_preview, caption="Vector Preview", clamp=True)
+            else:
+                st.warning("No polygons found.")
+
+        st.markdown("---")
+        
+        if st.button("Generate GDS (Vector)"):
+             if not st.session_state['polygons']:
+                 st.error("No polygons to write!")
+             else:
+                with st.spinner("Generating GDS file..."):
+                    try:
+                        logger.info("Starting GDS generation (Vector)...")
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".gds") as tmp_file:
+                            tmp_filename = tmp_file.name
+                        
+                        # Initialize writer just to use the generate_from_polygons method
+                        # Image is not needed for vector mode, pass dummy
+                        dummy_img = np.zeros((10,10))
+                        writer = GDSWriter(
+                            dummy_img, 
+                            pixel_size, 
+                            wafer_size_inch,
+                            pattern_layer=pattern_layer,
+                            outline_layer=outline_layer
+                        )
+                        
+                        lib = writer.generate_from_polygons(st.session_state['polygons'])
+                        lib.write_gds(tmp_filename)
+                        
+                        logger.info(f"GDS saved to {tmp_filename}")
+                        
+                        with open(tmp_filename, "rb") as f:
+                            gds_data = f.read()
+                        
+                        st.success(f"GDS generated successfully! ({len(gds_data)/1024:.1f} KB)")
+                        
+                        st.download_button(
+                            label="Download GDS",
+                            data=gds_data,
+                            file_name="vector_output.gds",
+                            mime="application/octet-stream"
+                        )
+                        
+                        os.unlink(tmp_filename)
+                        
+                    except Exception as e:
+                        logger.error(f"Error generating GDS: {e}")
+                        st.error(f"Error generating GDS: {e}")
 
 else:
-    st.info("Please upload an image to get started.")
+    st.info("Please upload a file to get started.")

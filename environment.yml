@@ -9,3 +9,5 @@ dependencies:
   - numpy
   - pillow
   - numba
+  - pip:
+    - svgpathtools

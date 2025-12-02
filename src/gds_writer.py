@@ -88,6 +88,45 @@ class GDSWriter:
                 
         return lib
 
+    def generate_from_polygons(self, polygons, lib_name="VectorLib", cell_name="Main"):
+        """
+        Generate a GDS library from a list of polygons.
+        polygons: List of numpy arrays (N, 2).
+        """
+        lib = gdstk.Library(lib_name)
+        cell = lib.new_cell(cell_name)
+        
+        # 1. Draw Wafer Outline
+        wafer_diameter_um = self.wafer_size_inch * 25400
+        wafer_radius_um = wafer_diameter_um / 2
+        wafer_outline = gdstk.ellipse((0, 0), wafer_radius_um, inner_radius=wafer_radius_um-100, layer=self.outline_layer, tolerance=1.0)
+        cell.add(wafer_outline)
+        
+        # 2. Draw Polygons
+        # We assume polygons are already in the correct coordinate system (centered)
+        # or we might need to center them.
+        # Let's assume the app handles the centering/scaling before passing here.
+        
+        for poly in polygons:
+            # poly is (N, 2) array of pixels. Convert to microns.
+            # But wait, if we trace an image, the poly coordinates are in pixels.
+            # If we load SVG, they are in SVG units.
+            # We should apply pixel_size scaling here.
+            
+            # Scale to microns
+            poly_um = poly * self.pixel_size
+            
+            # GDS requires Y up. Image/SVG often Y down.
+            # Let's flip Y if needed.
+            # Assuming standard image coords (y down), we flip y to make it upright in GDS.
+            poly_um[:, 1] = -poly_um[:, 1]
+            
+            # Create polygon
+            gds_poly = gdstk.Polygon(poly_um, layer=self.pattern_layer)
+            cell.add(gds_poly)
+            
+        return lib
+
     def save(self, filename, lib_name="HalftoneLib", cell_name="Main"):
         """
         Generate and save the GDS file.

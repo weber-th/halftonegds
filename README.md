@@ -20,6 +20,13 @@ A Streamlit application for converting images into halftone patterns and exporti
 *   **Analysis**:
     *   **Fill Factor**: Real-time calculation of pattern density.
     *   **Litho Simulation**: Preview of simulated resist development.
+*   **Vector & Trace Mode**:
+    *   **SVG Support**: Import SVG files directly.
+    *   **Image Tracing**: Trace bitmaps to vectors with adjustable threshold and smoothness.
+    *   **Advanced Operations**:
+        *   **Filtering**: Remove polygons by area (Min/Max).
+        *   **Boolean Ops**: Union (Merge), Difference (Invert/Negative).
+        *   **Offset**: Grow or shrink polygons.
 *   **Performance**: Accelerated halftoning using `numba` JIT compilation.
 
 ## Installation
@@ -61,10 +68,18 @@ A Streamlit application for converting images into halftone patterns and exporti
     *   **Analyze**: Check the Fill Factor and Litho Simulation.
     *   **Export**: Click "Generate GDS" to download the file.
 
+4.  **Vector/Trace Workflow**:
+    *   **Select Mode**: Choose "Vector/Trace" in the sidebar.
+    *   **Upload**: Upload an SVG or Image.
+    *   **Trace (if Image)**: Adjust threshold and smoothness. Option to **Fill Holes**.
+    *   **Advanced Ops**: Open the expander to Filter, Merge, Invert, or Offset polygons.
+    *   **Export**: Click "Generate GDS (Vector)".
+
 ## Project Structure
 
 *   `app.py`: Main Streamlit application.
 *   `src/halftoning.py`: Halftoning algorithms (optimized with Numba).
+*   `src/vector_processing.py`: SVG parsing, image tracing, and vector operations.
 *   `src/gds_writer.py`: GDSII generation logic using `gdstk`.
 *   `verify_logic.py`: Script for verifying core logic without the UI.
 *   `requirements.txt` / `environment.yml`: Dependency definitions.
