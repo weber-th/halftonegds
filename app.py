@@ -233,8 +233,44 @@ def process_image(image, wafer_size_inch, pixel_size, scale, rotation, offset_x_
         
     # Apply mask to canvas
     canvas = cv2.bitwise_and(canvas, canvas, mask=mask)
-        
+
     return canvas
+
+def generate_wafer_mask_polygons(wafer_size_inch, pixel_size, edge_exclusion_mm, flat_orientation):
+    """Generate wafer mask polygons respecting edge exclusion and flat.
+
+    Returns a list of polygons in pixel coordinates suitable for boolean operations.
+    """
+    wafer_diameter_um = wafer_size_inch * 25400
+    target_dim = int(wafer_diameter_um / pixel_size)
+    mask = np.zeros((target_dim, target_dim), dtype=np.uint8)
+
+    cx, cy = target_dim // 2, target_dim // 2
+    radius_px = target_dim // 2
+    exclusion_px = int(edge_exclusion_mm * 1000 / pixel_size)
+    valid_radius = radius_px - exclusion_px
+
+    if valid_radius <= 0:
+        return []
+
+    cv2.circle(mask, (cx, cy), valid_radius, 255, -1)
+
+    flat_cut_ratio = 0.95
+    cut_dist = int(radius_px * flat_cut_ratio)
+
+    if flat_orientation == "Bottom":
+        mask[cy + cut_dist:, :] = 0
+    elif flat_orientation == "Top":
+        mask[:cy - cut_dist, :] = 0
+    elif flat_orientation == "Left":
+        mask[:, :cx - cut_dist] = 0
+    elif flat_orientation == "Right":
+        mask[:, cx + cut_dist:] = 0
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    polygons = [cnt.squeeze(1).astype(float) for cnt in contours if cnt.size >= 6]
+
+    return polygons
 
 def draw_wafer_outline(image_rgb, wafer_size_inch, pixel_size, flat_orientation):
     # Draw wafer circle and flat for visualization
@@ -437,21 +473,47 @@ if uploaded_file is not None:
             polygons = trace_image(processed_image, threshold=trace_threshold, epsilon_factor=epsilon_factor)
             st.session_state['polygons'] = polygons
 
+        # Apply vector operations
+        processed_polygons = st.session_state['polygons']
+        if processed_polygons:
+            max_area_val = None if max_area == 0 else max_area
+            processed_polygons = filter_polygons_by_area(
+                processed_polygons, min_area=min_area, max_area=max_area_val
+            )
+
+            if enable_union and processed_polygons:
+                processed_polygons = boolean_operation(processed_polygons, "union")
+
+            if offset_val != 0 and processed_polygons:
+                offset_px = offset_val / pixel_size
+                processed_polygons = offset_polygons(processed_polygons, offset_px)
+
+            if enable_invert:
+                wafer_mask = generate_wafer_mask_polygons(
+                    wafer_size_inch, pixel_size, edge_exclusion, flat_orientation
+                )
+                if wafer_mask:
+                    processed_polygons = boolean_operation(
+                        wafer_mask, "difference", operand_polygons=processed_polygons
+                    )
+
+        st.session_state['polygons'] = processed_polygons
+
         with col2:
             st.subheader("Vector Preview")
             if st.session_state['polygons']:
                 st.info(f"Found {len(st.session_state['polygons'])} polygons.")
-                
+
                 # Draw polygons on a blank canvas for preview
                 wafer_diameter_um = wafer_size_inch * 25400
                 target_dim = int(wafer_diameter_um / pixel_size)
                 vector_preview = np.zeros((target_dim, target_dim, 3), dtype=np.uint8)
-                
+
                 # Draw polygons (Green)
                 # Polygons are in pixel coordinates
                 polys_int = [p.astype(np.int32) for p in st.session_state['polygons']]
                 cv2.polylines(vector_preview, polys_int, True, (0, 255, 0), 1)
-                
+
                 st.image(vector_preview, caption="Vector Preview", clamp=True)
             else:
                 st.warning("No polygons found.")
@@ -459,45 +521,45 @@ if uploaded_file is not None:
         st.markdown("---")
         
         if st.button("Generate GDS (Vector)"):
-             if not st.session_state['polygons']:
-                 st.error("No polygons to write!")
-             else:
+            if not st.session_state['polygons']:
+                st.error("No polygons to write!")
+            else:
                 with st.spinner("Generating GDS file..."):
                     try:
                         logger.info("Starting GDS generation (Vector)...")
                         with tempfile.NamedTemporaryFile(delete=False, suffix=".gds") as tmp_file:
                             tmp_filename = tmp_file.name
-                        
+
                         # Initialize writer just to use the generate_from_polygons method
                         # Image is not needed for vector mode, pass dummy
-                        dummy_img = np.zeros((10,10))
+                        dummy_img = np.zeros((10, 10))
                         writer = GDSWriter(
-                            dummy_img, 
-                            pixel_size, 
+                            dummy_img,
+                            pixel_size,
                             wafer_size_inch,
                             pattern_layer=pattern_layer,
                             outline_layer=outline_layer
                         )
-                        
+
                         lib = writer.generate_from_polygons(st.session_state['polygons'])
                         lib.write_gds(tmp_filename)
-                        
+
                         logger.info(f"GDS saved to {tmp_filename}")
-                        
+
                         with open(tmp_filename, "rb") as f:
                             gds_data = f.read()
-                        
+
                         st.success(f"GDS generated successfully! ({len(gds_data)/1024:.1f} KB)")
-                        
+
                         st.download_button(
                             label="Download GDS",
                             data=gds_data,
                             file_name="vector_output.gds",
                             mime="application/octet-stream"
                         )
-                        
+
                         os.unlink(tmp_filename)
-                        
+
                     except Exception as e:
                         logger.error(f"Error generating GDS: {e}")
                         st.error(f"Error generating GDS: {e}")
