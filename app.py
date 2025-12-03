@@ -175,7 +175,14 @@ def process_image(image, wafer_size_inch, pixel_size, scale, rotation, offset_x_
     M[0, 2] += (new_w / 2) - center[0]
     M[1, 2] += (new_h / 2) - center[1]
     
-    transformed = cv2.warpAffine(image, M, (new_w, new_h))
+    transformed = cv2.warpAffine(
+        image,
+        M,
+        (new_w, new_h),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=background_color,
+    )
     
     # Place on canvas (centering and offset)
     # Offset in pixels
