@@ -35,7 +35,7 @@ st.sidebar.subheader("Wafer Settings")
 wafer_size_inch = st.sidebar.selectbox(
     "Wafer Size",
     options=[1, 2, 3, 4],
-    index=3, # Default to 4 inch
+    index=0, # Default to 1 inch
     format_func=lambda x: f"{x} inch"
 )
 
@@ -58,7 +58,7 @@ background_cleanup_tolerance = st.sidebar.slider(
 pixel_size = st.sidebar.number_input(
     "Pixel Size (µm)", 
     min_value=0.1, 
-    value=10.0, 
+    value=5.0, 
     step=0.1,
     help="Size of each pixel in the GDS file (or scaling factor for vectors)."
 )
@@ -69,7 +69,7 @@ st.sidebar.info(f"Effective DPI: {int(dpi)}")
 edge_exclusion = st.sidebar.number_input(
     "Edge Exclusion (mm)",
     min_value=0.0,
-    value=2.0,
+    value=0.0,
     step=0.1,
     help="Width of the safe zone around the wafer edge where no pattern is written."
 )
