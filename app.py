@@ -297,13 +297,28 @@ if uploaded_file is not None:
         if file_ext == "svg":
             st.error("SVG files are not supported in Halftone mode. Please switch to Vector/Trace mode.")
         else:
-            # Read image
+            # Read image with alpha-awareness so transparent pixels default to bright
             file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-            original_image = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
-            
+            decoded = cv2.imdecode(file_bytes, cv2.IMREAD_UNCHANGED)
+
+            if decoded is None:
+                st.error("Unable to decode the uploaded image.")
+                st.stop()
+
+            if len(decoded.shape) == 2:
+                original_image = decoded
+            elif decoded.shape[2] == 4:
+                bgr = decoded[:, :, :3]
+                alpha = decoded[:, :, 3] / 255.0
+                gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+                # Treat transparent pixels as bright by compositing on white
+                original_image = (gray * alpha + 255 * (1 - alpha)).astype(np.uint8)
+            else:
+                original_image = cv2.cvtColor(decoded, cv2.COLOR_BGR2GRAY)
+
             # Apply Gamma Correction
             original_image = apply_gamma(original_image, gamma)
-            
+
             if invert:
                 original_image = 255 - original_image
 
@@ -430,8 +445,22 @@ if uploaded_file is not None:
         else:
             # Image Tracing
             file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-            original_image = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
-            
+            decoded = cv2.imdecode(file_bytes, cv2.IMREAD_UNCHANGED)
+
+            if decoded is None:
+                st.error("Unable to decode the uploaded image.")
+                st.stop()
+
+            if len(decoded.shape) == 2:
+                original_image = decoded
+            elif decoded.shape[2] == 4:
+                bgr = decoded[:, :, :3]
+                alpha = decoded[:, :, 3] / 255.0
+                gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+                original_image = (gray * alpha + 255 * (1 - alpha)).astype(np.uint8)
+            else:
+                original_image = cv2.cvtColor(decoded, cv2.COLOR_BGR2GRAY)
+
             # Apply transforms (Rotate/Scale/Offset) BEFORE tracing?
             # Or trace then transform?
             # Let's use the existing process_image to put it on the wafer canvas first
