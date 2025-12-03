@@ -47,6 +47,14 @@ background_color = st.sidebar.slider(
     help="Set the preview background color. Use a bright value (e.g. 255) for typical reflective wafers."
 )
 
+
+background_cleanup_tolerance = st.sidebar.slider(
+    "Background Cleanup (tolerance)",
+    min_value=0,
+    max_value=50,
+    value=10,
+    help="Treat pixels within this range of the background color as background to remove faint JPG borders.",
+)
 pixel_size = st.sidebar.number_input(
     "Pixel Size (µm)", 
     min_value=0.1, 
@@ -146,6 +154,17 @@ def apply_gamma(image, gamma=1.0):
     invGamma = 1.0 / gamma
     table = np.array([((i / 255.0) ** invGamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
     return cv2.LUT(image, table)
+
+
+def clean_background(image, background_color, tolerance):
+    if tolerance <= 0:
+        return image
+
+    # Pixels that are already close to the intended background are forced to the background
+    cutoff = np.clip(int(background_color) - tolerance, 0, 255)
+    cleaned = image.copy()
+    cleaned[cleaned >= cutoff] = background_color
+    return cleaned
 
 def process_image(image, wafer_size_inch, pixel_size, scale, rotation, offset_x_mm, offset_y_mm, edge_exclusion_mm, flat_orientation, background_color):
     logger.info("Processing image transformation...")
@@ -326,6 +345,9 @@ if uploaded_file is not None:
             # Apply Gamma Correction
             original_image = apply_gamma(original_image, gamma)
 
+            # Clean near-background pixels so JPEG halos don't leave a border when placed on the wafer
+            original_image = clean_background(original_image, background_color, background_cleanup_tolerance)
+
             if invert:
                 original_image = 255 - original_image
 
@@ -467,6 +489,8 @@ if uploaded_file is not None:
                 original_image = (gray * alpha + 255 * (1 - alpha)).astype(np.uint8)
             else:
                 original_image = cv2.cvtColor(decoded, cv2.COLOR_BGR2GRAY)
+
+            original_image = clean_background(original_image, background_color, background_cleanup_tolerance)
 
             # Apply transforms (Rotate/Scale/Offset) BEFORE tracing?
             # Or trace then transform?
