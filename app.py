@@ -266,7 +266,9 @@ def process_image(image, wafer_size_inch, pixel_size, scale, rotation, offset_x_
         mask[:, cx + cut_dist:] = 0
         
     # Apply mask to canvas
-    canvas = cv2.bitwise_and(canvas, canvas, mask=mask)
+    # Keep the wafer region as-is but force the excluded area back to the chosen
+    # background color so dark corners don't turn into features in the halftone/GDS.
+    canvas[mask == 0] = background_color
         
     return canvas
 
