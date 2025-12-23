@@ -74,11 +74,16 @@ edge_exclusion = st.sidebar.number_input(
     help="Width of the safe zone around the wafer edge where no pattern is written."
 )
 
-flat_orientation = st.sidebar.selectbox(
-    "Flat Orientation",
-    options=["Bottom", "Top", "Left", "Right"],
-    index=0
-)
+has_flat = st.sidebar.checkbox("Wafer has Flat", value=True)
+
+if has_flat:
+    flat_orientation = st.sidebar.selectbox(
+        "Flat Orientation",
+        options=["Bottom", "Top", "Left", "Right"],
+        index=0
+    )
+else:
+    flat_orientation = None
 
 # --- Alignment Settings ---
 st.sidebar.subheader("Alignment")
@@ -166,7 +171,7 @@ def clean_background(image, background_color, tolerance):
     cleaned[cleaned >= cutoff] = background_color
     return cleaned
 
-def process_image(image, wafer_size_inch, pixel_size, scale, rotation, offset_x_mm, offset_y_mm, edge_exclusion_mm, flat_orientation, background_color):
+def process_image(image, wafer_size_inch, pixel_size, scale, rotation, offset_x_mm, offset_y_mm, edge_exclusion_mm, flat_orientation, background_color, has_flat):
     logger.info("Processing image transformation...")
     # Wafer dimensions in microns
     wafer_diameter_um = wafer_size_inch * 25400
@@ -253,17 +258,18 @@ def process_image(image, wafer_size_inch, pixel_size, scale, rotation, offset_x_
         cv2.circle(mask, (cx, cy), valid_radius, 255, -1)
     
     # 2. Flat
-    flat_cut_ratio = 0.95 # Cut off outer 5%
-    cut_dist = int(radius_px * flat_cut_ratio)
-    
-    if flat_orientation == "Bottom":
-        mask[cy + cut_dist:, :] = 0
-    elif flat_orientation == "Top":
-        mask[:cy - cut_dist, :] = 0
-    elif flat_orientation == "Left":
-        mask[:, :cx - cut_dist] = 0
-    elif flat_orientation == "Right":
-        mask[:, cx + cut_dist:] = 0
+    if has_flat and flat_orientation:
+        flat_cut_ratio = 0.95 # Cut off outer 5%
+        cut_dist = int(radius_px * flat_cut_ratio)
+        
+        if flat_orientation == "Bottom":
+            mask[cy + cut_dist:, :] = 0
+        elif flat_orientation == "Top":
+            mask[:cy - cut_dist, :] = 0
+        elif flat_orientation == "Left":
+            mask[:, :cx - cut_dist] = 0
+        elif flat_orientation == "Right":
+            mask[:, cx + cut_dist:] = 0
         
     # Apply mask to canvas
     # Keep the wafer region as-is but force the excluded area back to the chosen
@@ -272,7 +278,7 @@ def process_image(image, wafer_size_inch, pixel_size, scale, rotation, offset_x_
         
     return canvas
 
-def draw_wafer_outline(image_rgb, wafer_size_inch, pixel_size, flat_orientation):
+def draw_wafer_outline(image_rgb, wafer_size_inch, pixel_size, flat_orientation, has_flat):
     # Draw wafer circle and flat for visualization
     h, w, _ = image_rgb.shape
     center = (w // 2, h // 2)
@@ -282,33 +288,34 @@ def draw_wafer_outline(image_rgb, wafer_size_inch, pixel_size, flat_orientation)
     cv2.circle(image_rgb, center, radius, (0, 255, 0), 2)
     
     # Draw flat
-    flat_cut_ratio = 0.95
-    cut_dist = int(radius * flat_cut_ratio)
-    
-    # Calculate chord points
-    chord_half_len = int(np.sqrt(radius**2 - cut_dist**2))
-    
-    pt1, pt2 = None, None
-    
-    if flat_orientation == "Bottom":
-        y = center[1] + cut_dist
-        pt1 = (center[0] - chord_half_len, y)
-        pt2 = (center[0] + chord_half_len, y)
-    elif flat_orientation == "Top":
-        y = center[1] - cut_dist
-        pt1 = (center[0] - chord_half_len, y)
-        pt2 = (center[0] + chord_half_len, y)
-    elif flat_orientation == "Left":
-        x = center[0] - cut_dist
-        pt1 = (x, center[1] - chord_half_len)
-        pt2 = (x, center[1] + chord_half_len)
-    elif flat_orientation == "Right":
-        x = center[0] + cut_dist
-        pt1 = (x, center[1] - chord_half_len)
-        pt2 = (x, center[1] + chord_half_len)
+    if has_flat and flat_orientation:
+        flat_cut_ratio = 0.95
+        cut_dist = int(radius * flat_cut_ratio)
         
-    if pt1 and pt2:
-        cv2.line(image_rgb, pt1, pt2, (0, 255, 0), 2)
+        # Calculate chord points
+        chord_half_len = int(np.sqrt(radius**2 - cut_dist**2))
+        
+        pt1, pt2 = None, None
+        
+        if flat_orientation == "Bottom":
+            y = center[1] + cut_dist
+            pt1 = (center[0] - chord_half_len, y)
+            pt2 = (center[0] + chord_half_len, y)
+        elif flat_orientation == "Top":
+            y = center[1] - cut_dist
+            pt1 = (center[0] - chord_half_len, y)
+            pt2 = (center[0] + chord_half_len, y)
+        elif flat_orientation == "Left":
+            x = center[0] - cut_dist
+            pt1 = (x, center[1] - chord_half_len)
+            pt2 = (x, center[1] + chord_half_len)
+        elif flat_orientation == "Right":
+            x = center[0] + cut_dist
+            pt1 = (x, center[1] - chord_half_len)
+            pt2 = (x, center[1] + chord_half_len)
+            
+        if pt1 and pt2:
+            cv2.line(image_rgb, pt1, pt2, (0, 255, 0), 2)
     
     return image_rgb
 
@@ -356,7 +363,7 @@ if uploaded_file is not None:
             # Process Image (Scale, Rotate, Place on Wafer Canvas, Masking)
             processed_image = process_image(
                 original_image, wafer_size_inch, pixel_size, scale, rotation,
-                offset_x, offset_y, edge_exclusion, flat_orientation, background_color
+                offset_x, offset_y, edge_exclusion, flat_orientation, background_color, has_flat
             )
 
             col1, col2 = st.columns(2)
@@ -365,7 +372,7 @@ if uploaded_file is not None:
                 st.subheader("Preview (Wafer)")
                 # Convert to RGB for visualization (to draw colored overlay)
                 preview_img = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
-                preview_img = draw_wafer_outline(preview_img, wafer_size_inch, pixel_size, flat_orientation)
+                preview_img = draw_wafer_outline(preview_img, wafer_size_inch, pixel_size, flat_orientation, has_flat)
                 st.image(preview_img, caption=f"Wafer: {wafer_size_inch}\"", clamp=True)
 
             with col2:
@@ -501,13 +508,13 @@ if uploaded_file is not None:
             
             processed_image = process_image(
                 original_image, wafer_size_inch, pixel_size, scale, rotation,
-                offset_x, offset_y, edge_exclusion, flat_orientation, background_color
+                offset_x, offset_y, edge_exclusion, flat_orientation, background_color, has_flat
             )
             
             with col1:
                 st.subheader("Preview (Wafer)")
                 preview_img = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
-                preview_img = draw_wafer_outline(preview_img, wafer_size_inch, pixel_size, flat_orientation)
+                preview_img = draw_wafer_outline(preview_img, wafer_size_inch, pixel_size, flat_orientation, has_flat)
                 st.image(preview_img, caption="Processed Image", clamp=True)
             
             # Trace
